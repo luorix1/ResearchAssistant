@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description"
+    content="Research Assistant: A powerful web crawling tool with summarization & keyword extraction capabilities">
+  <meta name="keywords" content="web crawler, web scraping, data extraction, automation, AI, crawling tool">
+  <meta name="robots" content="index, follow">
+  <meta property="og:title" content="Crawl4AI Web Crawler">
+  <meta property="og:description"
+    content="A powerful web crawling tool for automated data extraction and website analysis">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="/static/images/crawler-preview.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Crawl4AI Web Crawler">
+  <meta name="twitter:description"
+    content="A powerful web crawling tool with summarization & keyword extraction capabilities">
+  <link rel="canonical" href="https://crawl4ai.com">
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <title>Research Assistant</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <style>
+    [v-cloak] {
+      display: none;
+    }
+
+    .gradient-bg {
+      background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+    }
+
+    .search-container {
+      background: rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    @keyframes float {
+      0% {
+        transform: translateY(0px);
+      }
+
+      50% {
+        transform: translateY(-10px);
+      }
+
+      100% {
+        transform: translateY(0px);
+      }
+    }
+
+    .float-animation {
+      animation: float 3s ease-in-out infinite;
+    }
+
+    .glow {
+      box-shadow: 0 0 20px rgba(79, 70, 229, 0.3);
+    }
+  </style>
+</head>
+
+<body class="min-h-screen gradient-bg">
+  <div id="app" v-cloak class="flex flex-col min-h-screen">
+    <main class="container flex-grow px-4 py-16 mx-auto">
+      <div class="mb-12 text-center">
+        <h1 class="mb-6 text-5xl font-bold text-white float-animation">
+          Unlock the Power of Web Data
+        </h1>
+        <p class="max-w-2xl mx-auto text-xl text-indigo-100">
+          Transform any website into structured data with our intelligent crawler.
+          Fast, reliable, and powered by AI.
+        </p>
+      </div>
+
+      <div class="max-w-3xl mx-auto">
+        <form @submit.prevent="startCrawl" class="space-y-6">
+          <div class="p-8 search-container rounded-2xl">
+            <div class="mb-6">
+              <label for="url" class="block mb-4 text-lg font-medium text-center text-white">
+                Enter Website URL to Begin Your Journey
+              </label>
+              <div class="relative">
+                <input type="url" name="url" id="url" v-model="url" required
+                  class="block w-full px-6 py-4 text-lg transition duration-200 bg-white border-2 border-indigo-300 shadow-lg bg-opacity-95 rounded-xl focus:ring-4 focus:ring-indigo-500 focus:border-transparent glow"
+                  placeholder="https://example.com" aria-label="Enter website URL to crawl">
+              </div>
+            </div>
+
+            <div class="mb-6">
+              <label for="limit" class="block mb-2 text-sm font-medium text-indigo-100">
+                Page Limit
+              </label>
+              <input type="number" name="limit" id="limit" v-model="limit" min="1" max="70"
+                class="block w-full px-4 py-3 transition duration-200 bg-white border border-indigo-300 rounded-lg shadow-sm bg-opacity-90 focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                aria-label="Set maximum number of pages to crawl">
+              <p class="mt-2 text-sm text-indigo-100">
+                Maximum number of pages to crawl (default: 10, max: 70)
+              </p>
+            </div>
+
+            <button type="submit" :disabled="crawling"
+              class="w-full px-6 py-4 font-medium text-white transition duration-200 transform bg-indigo-600 shadow-lg hover:bg-indigo-700 rounded-xl hover:scale-105 focus:outline-none focus:ring-4 focus:ring-indigo-500 disabled:opacity-50 disabled:hover:scale-100">
+              {{ crawling ? 'Crawling...' : 'Start Your Crawl' }}
+            </button>
+          </div>
+        </form>
+
+        <div v-if="jobStatus" class="p-6 mt-8 text-white search-container rounded-xl" role="status" aria-live="polite">
+          <h2 class="mb-4 text-xl font-medium">
+            Crawl Progress
+          </h2>
+
+          <div class="w-full h-3 mb-4 bg-white rounded-full bg-opacity-20">
+            <div class="h-3 transition-all duration-500 bg-indigo-500 rounded-full"
+              :style="{ width: progressPercentage + '%' }" role="progressbar" :aria-valuenow="progressPercentage"
+              aria-valuemin="0" aria-valuemax="100">
+            </div>
+          </div>
+
+          <div class="space-y-3">
+            <p class="text-sm">
+              Status:
+              <span class="font-medium" :class="{
+                'text-yellow-300': jobStatus.status === 'processing',
+                'text-green-300': jobStatus.status === 'completed',
+                'text-red-300': jobStatus.status === 'failed'
+              }">
+                {{ jobStatus.status }}
+              </span>
+            </p>
+            <p v-if="jobStatus.current_url" class="text-sm break-all">
+              Current URL:
+              <span class="font-medium">
+                {{ jobStatus.current_url }}
+              </span>
+            </p>
+            <p class="text-sm">
+              Pages Processed:
+              <span class="font-medium">
+                {{ jobStatus.progress }}
+              </span>
+            </p>
+          </div>
+
+          <div v-if="jobStatus.status === 'completed'" class="mt-6 space-y-4">
+            <button @click="downloadResults"
+              class="w-full px-4 py-3 font-medium text-white transition duration-200 transform bg-green-500 rounded-lg shadow-lg hover:bg-green-600 hover:scale-105 focus:outline-none focus:ring-4 focus:ring-green-400">
+              Download Your Results
+            </button>
+            <button v-if="downloaded" @click="processResults"
+              class="w-full px-4 py-3 font-medium text-white transition duration-200 transform bg-blue-500 rounded-lg shadow-lg hover:bg-blue-600 hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-400">
+              Process Downloaded File
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid max-w-5xl grid-cols-1 gap-8 mx-auto mt-16 text-center md:grid-cols-3">
+        <div class="p-6 bg-white rounded-xl bg-opacity-10 backdrop-blur-lg">
+          <h3 class="mb-2 text-xl font-semibold text-white">Lightning Fast</h3>
+          <p class="text-indigo-100">Crawl websites at incredible speeds with our optimized engine</p>
+        </div>
+        <div class="p-6 bg-white rounded-xl bg-opacity-10 backdrop-blur-lg">
+          <h3 class="mb-2 text-xl font-semibold text-white">AI-Powered</h3>
+          <p class="text-indigo-100">Smart content extraction powered by advanced AI algorithms</p>
+        </div>
+        <div class="p-6 bg-white rounded-xl bg-opacity-10 backdrop-blur-lg">
+          <h3 class="mb-2 text-xl font-semibold text-white">Easy Export</h3>
+          <p class="text-indigo-100">Download your data in multiple formats with one click</p>
+        </div>
+      </div>
+    </main>
+
+    <footer class="py-6 text-center text-indigo-100">
+      <p class="text-sm">
+        2024 - Made by <a href="https://github.com/luorix1" target="_blank"
+          class="transition transform text-yellow-200 hover:text-yellow-100 hover:scale-105">Jinwoo Hwang</a>.
+      </p>
+    </footer>
+  </div>
+
+  <script>
+    const { createApp } = Vue;
+
+    createApp({
+      data() {
+        return {
+          url: '',
+          limit: 10,
+          crawling: false,
+          jobId: null,
+          jobStatus: null,
+          statusInterval: null,
+          downloaded: false
+        };
+      },
+      computed: {
+        progressPercentage() {
+          if (!this.jobStatus || !this.jobStatus.total_pages) return 0;
+          return Math.min(100, (this.jobStatus.progress / this.limit) * 100);
+        }
+      },
+      methods: {
+        handlePaste(event) {
+          const clipboardData = event.clipboardData || window.clipboardData;
+          const pastedText = clipboardData.getData('text');
+          this.url = pastedText;
+        },
+        handleInput(event) {
+          this.url = event.target.value;
+        },
+        async startCrawl() {
+          this.crawling = true;
+          try {
+            const response = await fetch('http://localhost:8000/api/crawl', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                url: this.url,
+                limit: this.limit
+              }),
+            });
+
+            if (!response.ok) {
+              throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            this.jobId = data.job_id;
+            this.jobStatus = data;
+            this.startStatusPolling();
+          } catch (error) {
+            console.error('Error starting crawl:', error);
+            alert('Failed to start crawl');
+            this.crawling = false;
+            this.jobStatus = null;
+            this.jobId = null;
+          }
+        },
+        async checkStatus() {
+          // Existing status checking logic
+        },
+        startStatusPolling() {
+          this.statusInterval = setInterval(this.checkStatus, 1000);
+        },
+        stopStatusPolling() {
+          if (this.statusInterval) {
+            clearInterval(this.statusInterval);
+            this.statusInterval = null;
+          }
+        }
+      }
+    }).mount('#app');
+  </script>
+</body>
+
+</html>

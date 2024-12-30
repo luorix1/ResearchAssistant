@@ -1,0 +1,56 @@
+{
+  "name": "crawl4ai",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "./start.sh",
+    "build": "electron-builder",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.crawl4ai.app",
+    "productName": "Crawl4AI",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "static/**/*",
+      "package.json",
+      "start.sh",
+      "docker-compose.yml",
+      "Dockerfile"
+    ],
+    "extraResources": [
+      {
+        "from": ".",
+        "filter": [
+          "main.py",
+          "poetry.lock",
+          "pyproject.toml",
+          "output/**/*"
+        ]
+      }
+    ]
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Web crawler and research assistant",
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "sudo-prompt": "^9.2.1"
+  }
+}
