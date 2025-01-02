@@ -200,6 +200,7 @@ const startDockerService = async () => {
         // Set environment variables for Docker
         const env = {
             ...process.env,
+            OPENAI_API_KEY: 'PLACEHOLDER',
             DOWNLOADS_DIR: downloadDirectory || path.join(app.getPath('downloads')),
             RESEARCH_DIR: researchDirectory || path.join(app.getPath('documents'), 'Research')
         };

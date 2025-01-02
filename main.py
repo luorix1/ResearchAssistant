@@ -21,9 +21,13 @@ from langchain.embeddings import OpenAIEmbeddings
 from langchain import OpenAI
 from langchain_community.vectorstores import FAISS
 from langchain.chains.summarize import load_summarize_chain
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from urllib.parse import unquote
-
+from dataclasses import dataclass
+import sqlite3
+from datetime import datetime
+import json
+from langchain import PromptTemplate
 
 # Load .env configuration
 load_dotenv()
@@ -33,10 +37,10 @@ app = FastAPI()
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Serve static files
@@ -46,6 +50,171 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 crawl_jobs: Dict[str, dict] = {}
 
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "output")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Add OPENAI_API_KEY to configuration
+config = {}
+config['OPENAI_API_KEY'] = os.getenv('OPENAI_API_KEY', 'default_value')
+config['OUTPUT_DIR'] = os.getenv("OUTPUT_DIR", "output")
+
+@dataclass
+class ProcessedDocument:
+    title: str
+    summary: str
+    keywords: List[str]
+    created_at: str
+    original_path: str
+
+
+def init_database():
+    """Initialize SQLite database with required schema"""
+    conn = sqlite3.connect('research_documents.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        keywords TEXT NOT NULL,
+        created_at TIMESTAMP NOT NULL,
+        original_path TEXT NOT NULL
+    )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+
+def save_to_database(doc: ProcessedDocument):
+    """Save processed document to SQLite database"""
+    conn = sqlite3.connect('research_documents.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+    INSERT INTO documents (title, summary, keywords, created_at, original_path)
+    VALUES (?, ?, ?, ?, ?)
+    ''', (
+        doc.title,
+        doc.summary,
+        json.dumps(doc.keywords),
+        doc.created_at,
+        doc.original_path
+    ))
+    
+    conn.commit()
+    conn.close()
+
+
+def generate_title(llm: OpenAI, text: str) -> str:
+    """Generate a one-line title for the document"""
+    title_template = """Please generate a clear, concise one-line title for the following text. 
+    The title should capture the main topic and be under 10 words.
+    
+    Text: {text}
+    
+    Title:"""
+    
+    title_prompt = PromptTemplate(template=title_template, input_variables=["text"])
+    
+    return llm(title_prompt.format(text=text[:1000])).strip()
+
+
+def extract_keywords(llm: OpenAI, summary: str) -> List[str]:
+    """Extract key topics and keywords from the summary"""
+    keyword_template = """Please extract 5-7 relevant keywords or key phrases from the following text.
+    Return them as a comma-separated list with no explanations or additional text.
+    
+    Text: {text}
+    
+    Keywords:"""
+    
+    keyword_prompt = PromptTemplate(template=keyword_template, input_variables=["text"])
+    
+    keywords_text = llm(keyword_prompt.format(text=summary)).strip()
+    return [k.strip() for k in keywords_text.split(',')]
+
+
+def process_markdown_file(file_path: str, llm: OpenAI) -> ProcessedDocument:
+    """Process a single markdown file and return structured results"""
+    # Load and split the document
+    loader = UnstructuredMarkdownLoader(file_path)
+    documents = loader.load()
+    
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=2000,
+        chunk_overlap=200
+    )
+    splits = text_splitter.split_documents(documents)
+    
+    # Create embeddings and index
+    embeddings = OpenAIEmbeddings()
+    faiss_index = FAISS.from_documents(splits, embeddings)
+    
+    # Generate summary
+    chain = load_summarize_chain(
+        llm,
+        chain_type="map_reduce",
+        return_intermediate_steps=False,
+        map_prompt=PromptTemplate(
+            template="Summarize the following text:\n\n{text}\n\nSummary:",
+            input_variables=["text"]
+        ),
+        combine_prompt=PromptTemplate(
+            template="Combine these summaries into a coherent summary of the entire text:\n\n{text}\n\nFinal summary:",
+            input_variables=["text"]
+        )
+    )
+    summary = chain.run(splits)
+    
+    # Generate title and keywords
+    title = generate_title(llm, summary)
+    keywords = extract_keywords(llm, summary)
+    
+    return ProcessedDocument(
+        title=title,
+        summary=summary,
+        keywords=keywords,
+        created_at=datetime.now().isoformat(),
+        original_path=file_path
+    )
+
+
+def summarize_markdown(research_dir: str):
+    """Process all markdown files in the research directory"""
+    # Initialize database
+    init_database()
+    
+    # Initialize OpenAI model
+    llm = OpenAI(temperature=0)
+    
+    # Process all markdown files
+    for root, _, files in os.walk(research_dir):
+        for file in files:
+            if file.endswith('.md'):
+                file_path = os.path.join(root, file)
+                try:
+                    # Process the markdown file
+                    processed_doc = process_markdown_file(file_path, llm)
+                    
+                    # Save to database
+                    save_to_database(processed_doc)
+                    
+                    # Save to JSON for backup
+                    output_json = {
+                        'title': processed_doc.title,
+                        'summary': processed_doc.summary,
+                        'keywords': processed_doc.keywords,
+                        'created_at': processed_doc.created_at,
+                        'original_path': processed_doc.original_path
+                    }
+                    
+                    json_path = f"{os.path.splitext(file_path)[0]}_processed.json"
+                    with open(json_path, 'w') as f:
+                        json.dump(output_json, f, ensure_ascii=False, indent=2)
+                        
+                except Exception as e:
+                    print(f"Error processing {file_path}: {str(e)}")
 
 
 class CrawlRequest(BaseModel):
@@ -59,10 +228,6 @@ class CrawlResponse(BaseModel):
     progress: int = 0
     total_pages: int = 0
     current_url: Optional[str] = None
-
-
-class DownloadRequest(BaseModel):
-    download_path: str
 
 
 def clean_path(url: str, base_url: str) -> str:
@@ -105,7 +270,7 @@ async def process_url(url: str, output_dir: str, crawler: AsyncWebCrawler, job_i
 async def crawl_website(job_id: str, url: str, limit: int):
     """Recursively crawl website and update job status"""
     try:
-        output_dir = os.path.join(OUTPUT_DIR, f"output_{job_id}")
+        output_dir = os.path.join(config['OUTPUT_DIR'], f"output_{job_id}")
         os.makedirs(output_dir, exist_ok=True)
         crawl_jobs[job_id]["base_url"] = url
         async with AsyncWebCrawler(verbose=True) as crawler:
@@ -135,8 +300,12 @@ async def crawl_website(job_id: str, url: str, limit: int):
                     ):
                         urls_to_process.add(link_url)
         
-        # FIXME: Add summarization and keyword extraction
-        shutil.rmtree(output_dir)
+        # Run summarization and processing after crawl is complete
+        try:
+            summarize_markdown(output_dir)
+        except Exception as e:
+            print(f"Error during summarization: {str(e)}")
+        
         crawl_jobs[job_id].update(
             {
                 "status": "completed",
@@ -144,55 +313,10 @@ async def crawl_website(job_id: str, url: str, limit: int):
                 "total_pages": len(processed_urls),
             }
         )
+        
     except Exception as e:
         crawl_jobs[job_id]["status"] = "failed"
         print(f"Crawl failed: {str(e)}")
-
-
-async def unzip_and_cleanup(zip_path: str, extract_dir: str):
-    try:
-        # Ensure the extraction directory exists
-        await aiofiles.os.makedirs(extract_dir, exist_ok=True)
-
-        # Copy the zip file to the target directory
-        zip_filename = os.path.basename(zip_path)
-        target_zip_path = os.path.join(extract_dir, zip_filename)
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, shutil.copy2, zip_path, target_zip_path)
-
-        # Unzip the file in the new directory
-        await loop.run_in_executor(
-            None, shutil.unpack_archive, target_zip_path, extract_dir
-        )
-
-        # Remove the zip file from both the source and target locations
-        await aiofiles.os.remove(zip_path)
-        await aiofiles.os.remove(target_zip_path)
-
-        return True
-    except Exception as e:
-        print(f"Error in unzip_and_cleanup: {str(e)}")
-        return False
-
-
-def summarize_markdown(files: list):
-    """Summarize and extract keywords from markdown files"""
-    for file_path in files:
-        loader = UnstructuredMarkdownLoader(file_path)
-        documents = loader.load()
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=2000, chunk_overlap=200
-        )
-        splits = text_splitter.split_documents(documents)
-        embeddings = OpenAIEmbeddings()
-        faiss_index = FAISS.from_documents(splits, embeddings)
-        retriever = faiss_index.as_retriever()
-        llm = OpenAI(temperature=0)
-        chain = load_summarize_chain(llm, chain_type="map_reduce")
-        result = chain.run({"input_documents": splits})
-        summary_path = f"{os.path.splitext(file_path)[0]}_summary.json"
-        with open(summary_path, "w") as summary_file:
-            json.dump({"summary": result}, summary_file, ensure_ascii=False, indent=4)
 
 
 @app.post("/api/crawl", response_model=CrawlResponse)
@@ -206,11 +330,6 @@ async def start_crawl(request: CrawlRequest):
     }
     asyncio.create_task(crawl_website(job_id, request.url, request.limit))
     return CrawlResponse(job_id=job_id, status="starting")
-
-
-@app.get("/api/healthcheck")
-async def healthcheck():
-    return {"status": "ok"}
 
 
 @app.get("/api/status/{job_id}", response_model=CrawlResponse)
@@ -234,56 +353,69 @@ async def download_results(job_id: str):
     if not os.path.exists(zip_path):
         raise HTTPException(status_code=404, detail="Results not found")
 
-    # filename = datetime.strftime(datetime.now(), "%Y-%m-%d_%H-%M-%S") + "_crawl_results.zip"
     filename = "crawl_results.zip"
-
     return FileResponse(zip_path, media_type="application/zip", filename=filename)
 
 
-@app.post("/api/process/{job_id}")
-async def process_downloaded_file(job_id: str):
-    """Process the downloaded file after user confirms download"""
-    zip_path = f"{DOWNLOAD_DIR}/crawl_results.zip"
-    if not os.path.exists(zip_path):
-        raise HTTPException(status_code=404, detail="Zip file not found")
-
-    try:
-        await handle_post_download(job_id, zip_path)
-        return {"status": "success", "message": "File processed successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "/app/Downloads")
-RESEARCH_DIR = os.getenv("RESEARCH_DIR", "/app/Research")
-
-
-async def handle_post_download(job_id: str, zip_path: str):
-    """Handle post-download processing of the zip file"""
-    try:
-        print(f"Processing downloaded file for job {job_id}")
-        # Create research directory if it doesn't exist
-        os.makedirs(RESEARCH_DIR, exist_ok=True)
-
-        # Generate timestamped folder name
-        timestamp = datetime.strftime(datetime.now(), "%Y-%m-%d_%H-%M-%S")
-        extract_dir = os.path.join(RESEARCH_DIR, f"crawl_results_{timestamp}")
-
-        # Create directory for extracted files
-        os.makedirs(extract_dir, exist_ok=True)
-
-        success = await unzip_and_cleanup(zip_path, extract_dir)
-        if not success:
-            print(f"Failed to process downloaded file for job {job_id}")
-    except Exception as e:
-        print(f"Error in post-download processing for job {job_id}: {str(e)}")
-
-
-# Serve index.html
 @app.get("/")
 async def read_root():
     try:
         return FileResponse("static/index.html")
     except Exception as e:
-        # Return a simple JSON response if file not found
         return {"status": "ok"}
+
+
+# Additional endpoints for accessing processed data
+
+@app.get("/api/documents")
+async def get_documents():
+    """Retrieve all processed documents from the database"""
+    conn = sqlite3.connect('research_documents.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM documents ORDER BY created_at DESC')
+    rows = cursor.fetchall()
+    
+    documents = []
+    for row in rows:
+        documents.append({
+            'id': row[0],
+            'title': row[1],
+            'summary': row[2],
+            'keywords': json.loads(row[3]),
+            'created_at': row[4],
+            'original_path': row[5]
+        })
+    
+    conn.close()
+    return {'documents': documents}
+
+
+@app.get("/api/documents/{doc_id}")
+async def get_document(doc_id: int):
+    """Retrieve a specific document by ID"""
+    conn = sqlite3.connect('research_documents.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+    row = cursor.fetchone()
+    
+    if not row:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    document = {
+        'id': row[0],
+        'title': row[1],
+        'summary': row[2],
+        'keywords': json.loads(row[3]),
+        'created_at': row[4],
+        'original_path': row[5]
+    }
+    
+    conn.close()
+    return document
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
